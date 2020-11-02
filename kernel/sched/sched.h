@@ -586,6 +586,7 @@ struct new_rq{
 	struct task_struct *curr;
 	unsigned int nr_running;
 	unsigned long next_balance; //下一次tick中断触发时间
+	u64 min_vruntime;
 };
 
 /* Real-Time classes' related field in a runqueue: */

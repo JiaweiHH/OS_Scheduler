@@ -77,6 +77,9 @@ struct task_struct init_task
 	},
 	.nt		= {
 		.time_slice		= NEW_TIMESLICE,
+		.vruntime		= 0, 
+		.lastRSS		= 0, 
+		.cur_weight_idx = 0, 
 	},
 	.rt		= {
 		.run_list	= LIST_HEAD_INIT(init_task.rt.run_list),

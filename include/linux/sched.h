@@ -505,6 +505,9 @@ struct sched_new_entity{
 	unsigned int time_slice;
 	unsigned short on_rq;
 	unsigned long arrive_time;
+	unsigned long cur_weight_idx;
+	unsigned long lastRSS;
+	u64 vruntime;
 };
 
 struct sched_dl_entity {
