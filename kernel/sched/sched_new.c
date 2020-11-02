@@ -17,6 +17,10 @@
 #include <trace/events/sched.h>
 
 #define NEW_TIMESLICE (HZ / 50)
+#define INDEX_MAX 40
+#define INDEX_MIN 0
+#define INDEX_DEFAULT 20
+#define MIN_DIFF 500
 
 static int idle_balance(struct rq *this_rq, struct rq_flags *rf);
 
@@ -48,8 +52,66 @@ task_of(struct sched_new_entity *new_entity){
    // printk("%d----------------------", cpu);
 // }
 
+static void update_weight_index(struct task_struct *p)
+{
+   struct sched_new_entity *nse = &p->nt;
+   //内核线程mm为空
+   if(!p->mm)
+	{
+		nse->cur_weight_idx = INDEX_DEFAULT;
+      return;
+	}
+   //第一次时间片用完 ，当前第一次统计RSS
+	if(nse->lastRSS == 0)
+	{
+		nse->lastRSS = get_mm_rss(p->mm);
+      nse->cur_weight_idx = INDEX_DEFAULT;
+      return;
+	}
+   //第n次时间片用完 ，当前第n次统计RSS(n >= 2)
+	int index = nse->cur_weight_idx;
+	int cur_rss = get_mm_rss(p->mm);
+	
+	if(cur_rss - nse->lastRSS > MIN_DIFF) {
+		index--;
+	} else if(nse->lastRSS - cur_rss > MIN_DIFF) {
+		index++;
+	}
+	//调整至合法区间
+   index = max(INDEX_MIN, index);
+	index = min(INDEX_MAX - 1, index);
+	nse->lastRSS = cur_rss;
+   nse->cur_weight_idx = index;
+}
+
+//计算vruntime 直接参考奔跑吧Linux内核 p350
+static u64 update_vruntime(struct task_struct *p)
+{
+   struct sched_new_entity *nse = &p->nt;
+   if(nse->cur_weight_idx == INDEX_DEFAULT)
+      return NEW_TIMESLICE;
+   
+   u64 delta = NEW_TIMESLICE;
+   unsigned long weight_ = scale_load(sched_prio_to_weight[nse->cur_weight_idx]);
+   u32 in_weight_ = sched_prio_to_wmult[nse->cur_weight_idx];
+   int shift = 32;
+   u64 fact = weight_;
+   fact = (u64)(u32)fact * in_weight_;
+   while(fact >> 32) {
+      fact >>= 1;
+      shift--;
+   }
+   return (u64)((delta * fact) >> shift);
+}
+
 void update_curr(struct rq *rq){
-   ;
+   struct new_rq *new_rq = &rq->nrq;
+   struct task_struct *p = new_rq->curr;
+   struct sched_new_entity *nse = &p->nt;
+   nse->time_slice = NEW_TIMESLICE;
+
+   update_weight_index(p);
+   nse->vruntime += update_vruntime(p);
 }
 
 void init_new_rq(struct new_rq *new_rq)
@@ -57,6 +119,7 @@ void init_new_rq(struct new_rq *new_rq)
 	new_rq->run_queue = RB_ROOT;
 	new_rq->curr = NULL;
    new_rq->nr_running = 0;
+   new_rq->min_vruntime = 0;
 }
 
 int new_rq_empty(struct new_rq *nrq){
@@ -64,11 +127,12 @@ int new_rq_empty(struct new_rq *nrq){
    return nrq->nr_running == 0;
 }
 
-bool compared_with_arrive_time(struct sched_new_entity *new, struct sched_new_entity *temp){
-   if(time_after_eq(temp->arrive_time, new->arrive_time))
+bool compared_with_vruntime(struct sched_new_entity *new, struct sched_new_entity *temp){
+   if(temp->vruntime > new->vruntime)
       return true;
    return false;
 }
+
 
 static void 
 enqueue_entity(struct new_rq *new_rq, struct sched_new_entity *new_entity){
@@ -77,7 +141,7 @@ enqueue_entity(struct new_rq *new_rq, struct sched_new_entity *new_entity){
 	struct sched_new_entity *entry;
 	// bool leftmost = true;
 
-   new_entity->arrive_time = jiffies;
+   // new_entity->arrive_time = jiffies;
 
    while (*link) {
 		parent = *link;
@@ -86,7 +150,7 @@ enqueue_entity(struct new_rq *new_rq, struct sched_new_entity *new_entity){
 		 * We dont care about collisions. Nodes with
 		 * the same key stay together.
 		 */
-		if (compared_with_arrive_time(new_entity, entry)) {
+		if (compared_with_vruntime(new_entity, entry)) {
 			link = &parent->rb_left;
 		} else {
 			link = &parent->rb_right;
@@ -104,7 +168,7 @@ enqueue_task_new(struct rq *rq, struct task_struct *p, int flags){
    struct sched_new_entity *nse = &p->nt;
    struct new_rq *nrq = &rq->nrq;
 
-   nse->arrive_time = jiffies;
+   // nse->arrive_time = jiffies;
 
    if(nrq->curr != p)
       enqueue_entity(nrq, nse);
@@ -172,19 +236,6 @@ void set_next_entity(struct new_rq *new_rq, struct sched_new_entity *new_entity,
 
 static struct task_struct *
 pick_next_task_new(struct rq *rq, struct task_struct *prev, struct rq_flags *rf){
-//    int new_tasks = 0;
-// again:
-//    if(rq->nrq.curr)
-//       return rq->nrq.curr;
-//    new_tasks = idle_balance(rq, rf);
-//    if(new_tasks < 0)
-//       return RETRY_TASK;
-   
-//    if(new_tasks > 0)
-//       goto again;
-      
-//    return NULL;
-
    struct new_rq *new_rq = &rq->nrq;
 	struct sched_new_entity *nse;
 	struct task_struct *p;
@@ -217,7 +268,8 @@ static void task_tick_new(struct rq *rq, struct task_struct *p, int queued){
       return;
    }
    //time_slice == 0
-   nse->time_slice = NEW_TIMESLICE;
+   update_curr(rq);
+   
 
    struct new_rq *nrq = &rq->nrq;
 
@@ -231,8 +283,11 @@ static void put_prev_task_new(struct rq *rq, struct task_struct *prev){
    struct sched_new_entity *nse = &prev->nt;
 
    struct new_rq *new_rq= &rq->nrq;
-   if(nse->on_rq)
+   if(nse->on_rq){
+      update_curr(rq);
       enqueue_entity(new_rq, &prev->nt);
+   }
+      
    // print_queue(new_rq, rq->cpu * 10 + 6);
    
    new_rq->curr = NULL;
@@ -246,6 +301,7 @@ static void set_curr_task_new(struct rq *rq){
 
 static void task_fork_new(struct task_struct *p){
    p->nt.time_slice = NEW_TIMESLICE;
+   p->nt.vruntime = current->nt.vruntime;
 }
 static void switched_from_new(struct rq *this_rq, struct task_struct *task){
    
