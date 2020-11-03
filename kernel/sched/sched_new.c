@@ -120,6 +120,7 @@ void init_new_rq(struct new_rq *new_rq)
 	new_rq->curr = NULL;
    new_rq->nr_running = 0;
    new_rq->min_vruntime = 0;
+   new_rq->runnable_load_sum = 0;
 }
 
 int new_rq_empty(struct new_rq *nrq){
@@ -274,7 +275,7 @@ static void task_tick_new(struct rq *rq, struct task_struct *p, int queued){
    struct new_rq *nrq = &rq->nrq;
 
    if(nrq->nr_running > 1){
-      printk("cpu: %d, %d need sched", rq->cpu, p->pid);
+      // printk("cpu: %d, %d need sched", rq->cpu, p->pid);
       resched_curr(rq);
    }
 } 
@@ -412,7 +413,7 @@ static __latent_entropy void run_my_load_balance(struct softirq_action *h)
       return;
    }
       
-   printk("%d softirq load_balance触发\n", this_rq->cpu);
+   // printk("%d softirq load_balance触发\n", this_rq->cpu);
    
    deactivate_task(busiest_rq, migrate_task, 0);
    set_task_cpu(migrate_task, this_rq->cpu);
@@ -479,8 +480,8 @@ static int idle_balance(struct rq *this_rq, struct rq_flags *rf){
          // del_task->on_rq = TASK_ON_RQ_QUEUED; //CFS
          pulled_task++;
          // check_preempt_curr(this_rq, del_task, 0); //CFS
-         printk("process migrate %d, from %d to %d. cpu 0123: %d %d %d %d\n", migrate_task->pid, target_cpu, this_cpu, 
-                                                                                       cpu_rq(0)->nrq.nr_running, cpu_rq(1)->nrq.nr_running, cpu_rq(2)->nrq.nr_running, cpu_rq(3)->nrq.nr_running);
+         // printk("process migrate %d, from %d to %d. cpu 0123: %d %d %d %d\n", migrate_task->pid, target_cpu, this_cpu, 
+                                                                                       // cpu_rq(0)->nrq.nr_running, cpu_rq(1)->nrq.nr_running, cpu_rq(2)->nrq.nr_running, cpu_rq(3)->nrq.nr_running);
    }
 
    raw_spin_unlock(&target_rq->lock);
