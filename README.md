@@ -11,4 +11,9 @@
 
 
 提交信息格式：[mod|add|del]description
-分支命名：新功能 feature/description；bug修复 bugfix/description
+
+分支命名：新功能 feature/description
+
+bug修复 bugfix/description
+
+编译的时候请勾选**NEW cpu scheduler**，gcc版本过高可能会出现编译错误之前用的gcc版本是7.5.0
