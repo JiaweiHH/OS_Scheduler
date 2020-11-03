@@ -30,41 +30,15 @@ task_of(struct sched_new_entity *new_entity){
    return container_of(new_entity, struct task_struct, nt);
 }
 
-// static void 
-// print_queue(struct new_rq *new_rq, int cpu){
-   // struct rb_root *root = &new_rq->run_queue;
-   // struct rb_node *node = rb_first(root);
-   // struct sched_new_entity *nse;
-   // struct task_struct *p;
-
-   // if(new_rq->curr)
-   //    printk("cpu: %d, tasks left->right. curr: %d, on_rq: %d,%d", cpu, new_rq->curr->pid, new_rq->curr->on_rq, new_rq->curr->nt.on_rq);
-   // else
-   //    printk("cpu: %d, tasks left->right!!!", cpu);
-   
-
-   // while(node){
-   //    nse = rb_entry(node, struct sched_new_entity, run_node);
-   //    p = task_of(nse);
-   //    printk("cpu: %d, pid: %d, on_rq: %d, %d", cpu, p->pid, p->on_rq, nse->on_rq);
-   //    node = rb_next(node);
-   // }
-   
-   // printk("%d----------------------", cpu);
-// }
-
-static void update_weight_index(struct task_struct *p)
-{
+static void update_weight_index(struct task_struct *p){
    struct sched_new_entity *nse = &p->nt;
    //内核线程mm为空
-   if(!p->mm)
-	{
+   if(!p->mm){
 		nse->cur_weight_idx = INDEX_DEFAULT;
       return;
 	}
    //第一次时间片用完 ，当前第一次统计RSS
-	if(nse->lastRSS == 0)
-	{
+	if(nse->lastRSS == 0){
 		nse->lastRSS = get_mm_rss(p->mm);
       nse->cur_weight_idx = INDEX_DEFAULT;
       return;
@@ -86,8 +60,7 @@ static void update_weight_index(struct task_struct *p)
 }
 
 //计算vruntime 直接参考奔跑吧Linux内核 p350
-static u64 update_vruntime(struct task_struct *p,struct rq *rq)
-{
+static u64 update_vruntime(struct task_struct *p,struct rq *rq){
    struct sched_new_entity *nse = &p->nt;
    u64 delta = rq->clock - nse->exec_start;
    if(nse->cur_weight_idx == INDEX_DEFAULT)
@@ -119,8 +92,7 @@ void update_curr(struct rq *rq){
    }
 }
 
-void init_new_rq(struct new_rq *new_rq)
-{
+void init_new_rq(struct new_rq *new_rq){
 	new_rq->run_queue = RB_ROOT;
 	new_rq->curr = NULL;
    new_rq->nr_running = 0;
@@ -128,14 +100,11 @@ void init_new_rq(struct new_rq *new_rq)
 }
 
 int new_rq_empty(struct new_rq *nrq){
-   // printk("next: %p, run_queue: %p", nrq->run_queue.next, &nrq->run_queue);
    return nrq->nr_running == 0;
 }
 
 bool compared_with_vruntime(struct sched_new_entity *new, struct sched_new_entity *temp){
-   if(temp->vruntime > new->vruntime)
-      return true;
-   return false;
+   return (s64)(temp->vruntime - new->vruntime) > 0;
 }
 
 
@@ -144,9 +113,6 @@ enqueue_entity(struct new_rq *new_rq, struct sched_new_entity *new_entity){
    struct rb_node **link = &new_rq->run_queue.rb_node;
 	struct rb_node *parent = NULL;
 	struct sched_new_entity *entry;
-	// bool leftmost = true;
-
-   // new_entity->arrive_time = jiffies;
 
    while (*link) {
 		parent = *link;
@@ -173,8 +139,6 @@ enqueue_task_new(struct rq *rq, struct task_struct *p, int flags){
    struct sched_new_entity *nse = &p->nt;
    struct new_rq *nrq = &rq->nrq;
 
-   // nse->arrive_time = jiffies;
-
    if(nrq->curr != p)
       enqueue_entity(nrq, nse);
 
@@ -187,12 +151,10 @@ enqueue_task_new(struct rq *rq, struct task_struct *p, int flags){
    nrq->nr_running++;
    add_nr_running(rq, 1);
    // printk("cpu: %d, %d enqueue, new_rq have %d task\n", rq->cpu, p->pid, nrq->nr_running);
-   // print_queue(nrq, rq->cpu);
 }
 
 static void 
 dequeue_entity(struct new_rq *new_rq, struct sched_new_entity *new_entity){
-   // printk("准备dequeue %d, on_rq: %d\n", p->pid, new_entity->on_rq);
    rb_erase(&new_entity->run_node, &new_rq->run_queue);
 }
 
@@ -200,7 +162,7 @@ static void
 dequeue_task_new(struct rq *rq, struct task_struct *p, int flags){
    struct sched_new_entity *nse = &p->nt;
    struct new_rq *nrq = &rq->nrq;
-   // print_queue(nrq);
+
    if(p != nrq->curr)
       dequeue_entity(nrq, nse);
    
@@ -209,7 +171,6 @@ dequeue_task_new(struct rq *rq, struct task_struct *p, int flags){
    nrq->nr_running--;
    sub_nr_running(rq, 1);
    // printk("cpu: %d, %d dequeue, new_rq have %d task\n", rq->cpu, p->pid, nrq->nr_running); 
-   // print_queue(nrq, rq->cpu);
 }
 
 static void yield_task_new(struct rq *rq){
@@ -229,14 +190,10 @@ struct sched_new_entity *pick_next_entity(struct new_rq *new_rq){
 }
 
 void set_next_entity(struct new_rq *new_rq, struct sched_new_entity *new_entity, int cpu){
-   // struct task_struct *p = task_of(new_entity);
-   // printk("set_next_entity. cpu: %d, set %d", cpu, p->pid);
    if(new_entity->on_rq){
       dequeue_entity(new_rq, new_entity);
-      // printk("set_next_entity. cpu: %d, dequeue %d", cpu, p->pid);
    }
    new_rq->curr = task_of(new_entity);
-   // print_queue(new_rq, cpu * 10 + 5);
 }
 
 static struct task_struct *
@@ -256,12 +213,12 @@ again:
       return p;
    }
 
-   // new_tasks = idle_balance(rq, rf);
+   new_tasks = idle_balance(rq, rf);
 
-   // if(new_tasks < 0)
-   //    return RETRY_TASK;
-   // if(new_tasks > 0)
-   //    goto again;
+   if(new_tasks < 0)
+      return RETRY_TASK;
+   if(new_tasks > 0)
+      goto again;
    
    return NULL;
 }
@@ -279,7 +236,7 @@ static void task_tick_new(struct rq *rq, struct task_struct *p, int queued){
    struct new_rq *nrq = &rq->nrq;
 
    if(nrq->nr_running > 1){
-      printk("cpu: %d, %d need sched", rq->cpu, p->pid);
+      // printk("cpu: %d, %d need sched", rq->cpu, p->pid);
       resched_curr(rq);
    }
 } 
@@ -292,8 +249,6 @@ static void put_prev_task_new(struct rq *rq, struct task_struct *prev){
       update_curr(rq);
       enqueue_entity(new_rq, &prev->nt);
    }
-      
-   // print_queue(new_rq, rq->cpu * 10 + 6);
    
    new_rq->curr = NULL;
 }
@@ -331,8 +286,6 @@ bool is_migrate_task(struct task_struct *task, struct rq *this_rq, struct rq *ta
       return false;
    if(task_running(target_rq, task)) //task_running开启了SMP时判断on_cpu字段
       return false;
-   // if(target_rq->curr == task)
-   //    return false;
    return true;
 }
 
@@ -345,18 +298,14 @@ static int select_task_rq_new(struct task_struct *p, int prev_cpu, int sd_flag, 
    unsigned int cpu;
    unsigned int temp_cpu = prev_cpu, amount_tasks = 65536;
 
-   // rcu_read_lock();
    for_each_online_cpu(cpu){
       struct rq *rq = cpu_rq(cpu);
       if(rq->nr_running < amount_tasks && cpumask_test_cpu(cpu, &p->cpus_allowed)){
          temp_cpu = cpu;
          amount_tasks = rq->nrq.nr_running;
-         // return cpu;
       }
    }
-   // rcu_read_unlock();
    return temp_cpu;
-   // return prev_cpu;
 }
 
 /* Assumes rq->lock is held */
@@ -370,7 +319,7 @@ static void rq_offline_new(struct rq *rq){
 struct rq *find_busiest_rq(int this_cpu){
    int cpu, nr_task = 0;
    struct rq *target_rq = NULL;
-   // rcu_read_lock();
+
    for_each_online_cpu(cpu){
       if(cpu == this_cpu)
          continue;
@@ -380,7 +329,7 @@ struct rq *find_busiest_rq(int this_cpu){
          target_rq = rq;
       }
    }
-   // rcu_read_unlock();
+
 
    return target_rq;
 }
@@ -417,7 +366,7 @@ static __latent_entropy void run_my_load_balance(struct softirq_action *h)
       return;
    }
       
-   printk("%d softirq load_balance触发\n", this_rq->cpu);
+   // printk("%d softirq load_balance触发\n", this_rq->cpu);
    
    deactivate_task(busiest_rq, migrate_task, 0);
    set_task_cpu(migrate_task, this_rq->cpu);
@@ -442,9 +391,6 @@ static void task_dead_new(struct task_struct *p){}
    因为目标是找到最长的rq，而要出现上述情况两个rq必须一样长，但是其中一个为0，因此不可能出现
 */
 static int idle_balance(struct rq *this_rq, struct rq_flags *rf){
-   // if(this_rq->avg_idle < sysctl_sched_migration_cost) //当前cpu处于idle状态的时间
-   //    return 0;
-
    int this_cpu = this_rq->cpu;
    int pulled_task = 0;
 
@@ -484,8 +430,6 @@ static int idle_balance(struct rq *this_rq, struct rq_flags *rf){
          // del_task->on_rq = TASK_ON_RQ_QUEUED; //CFS
          pulled_task++;
          // check_preempt_curr(this_rq, del_task, 0); //CFS
-         printk("process migrate %d, from %d to %d. cpu 0123: %d %d %d %d\n", migrate_task->pid, target_cpu, this_cpu, 
-                                                                                       cpu_rq(0)->nrq.nr_running, cpu_rq(1)->nrq.nr_running, cpu_rq(2)->nrq.nr_running, cpu_rq(3)->nrq.nr_running);
    }
 
    raw_spin_unlock(&target_rq->lock);
@@ -549,7 +493,7 @@ const struct sched_class new_sched_class = {
 __init void init_sched_new_class(void)
 {
 #ifdef CONFIG_SMP
-	// open_softirq(SCHED_SOFTIRQ, run_my_load_balance);
+	open_softirq(SCHED_SOFTIRQ, run_my_load_balance);
 #endif /* SMP */
 
 }
