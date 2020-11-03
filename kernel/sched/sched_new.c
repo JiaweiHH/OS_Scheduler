@@ -16,11 +16,12 @@
 
 #include <trace/events/sched.h>
 
-#define NEW_TIMESLICE (HZ / 50)
+#define NEW_TIMESLICE 25
 #define INDEX_MAX 40
 #define INDEX_MIN 0
 #define INDEX_DEFAULT 20
 #define MIN_DIFF 500
+#define MIN_UPDATE_INTERVAL 5
 
 static int idle_balance(struct rq *this_rq, struct rq_flags *rf);
 
@@ -85,13 +86,13 @@ static void update_weight_index(struct task_struct *p)
 }
 
 //计算vruntime 直接参考奔跑吧Linux内核 p350
-static u64 update_vruntime(struct task_struct *p)
+static u64 update_vruntime(struct task_struct *p,struct rq *rq)
 {
    struct sched_new_entity *nse = &p->nt;
+   u64 delta = rq->clock - nse->exec_start;
    if(nse->cur_weight_idx == INDEX_DEFAULT)
-      return NEW_TIMESLICE;
+      return delta;
    
-   u64 delta = NEW_TIMESLICE;
    unsigned long weight_ = scale_load(sched_prio_to_weight[nse->cur_weight_idx]);
    u32 in_weight_ = sched_prio_to_wmult[nse->cur_weight_idx];
    int shift = 32;
@@ -101,6 +102,7 @@ static u64 update_vruntime(struct task_struct *p)
       fact >>= 1;
       shift--;
    }
+
    return (u64)((delta * fact) >> shift);
 }
 
@@ -110,8 +112,11 @@ void update_curr(struct rq *rq){
    struct sched_new_entity *nse = &p->nt;
    nse->time_slice = NEW_TIMESLICE;
 
-   update_weight_index(p);
-   nse->vruntime += update_vruntime(p);
+   if(rq->clock - nse->exec_start > MIN_UPDATE_INTERVAL) {
+      update_weight_index(p);
+      nse->vruntime += update_vruntime(p,rq);
+      nse->exec_start = rq->clock;
+   }
 }
 
 void init_new_rq(struct new_rq *new_rq)
@@ -247,16 +252,16 @@ again:
       nse = pick_next_entity(new_rq);
       set_next_entity(new_rq, nse, rq->cpu);
       p = task_of(nse);
-
+      p->nt.exec_start = rq->clock;
       return p;
    }
 
-   new_tasks = idle_balance(rq, rf);
+   // new_tasks = idle_balance(rq, rf);
 
-   if(new_tasks < 0)
-      return RETRY_TASK;
-   if(new_tasks > 0)
-      goto again;
+   // if(new_tasks < 0)
+   //    return RETRY_TASK;
+   // if(new_tasks > 0)
+   //    goto again;
    
    return NULL;
 }
@@ -544,7 +549,7 @@ const struct sched_class new_sched_class = {
 __init void init_sched_new_class(void)
 {
 #ifdef CONFIG_SMP
-	open_softirq(SCHED_SOFTIRQ, run_my_load_balance);
+	// open_softirq(SCHED_SOFTIRQ, run_my_load_balance);
 #endif /* SMP */
 
 }

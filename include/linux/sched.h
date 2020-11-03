@@ -508,6 +508,7 @@ struct sched_new_entity{
 	unsigned long cur_weight_idx;
 	unsigned long lastRSS;
 	u64 vruntime;
+	u64 exec_start;
 };
 
 struct sched_dl_entity {
