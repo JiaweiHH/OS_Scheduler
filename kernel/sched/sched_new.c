@@ -21,7 +21,7 @@
 #define INDEX_MIN 0
 #define INDEX_DEFAULT 20
 #define MIN_DIFF 500
-#define MIN_UPDATE_INTERVAL 5
+// #define MIN_UPDATE_INTERVAL 5
 
 static int idle_balance(struct rq *this_rq, struct rq_flags *rf);
 
@@ -85,11 +85,10 @@ void update_curr(struct rq *rq){
    struct sched_new_entity *nse = &p->nt;
    nse->time_slice = NEW_TIMESLICE;
 
-   if(rq->clock - nse->exec_start > MIN_UPDATE_INTERVAL) {
-      update_weight_index(p);
-      nse->vruntime += update_vruntime(p,rq);
-      nse->exec_start = rq->clock;
-   }
+   update_weight_index(p);
+   nse->vruntime += update_vruntime(p,rq);
+   nse->exec_start = rq->clock;
+   
 }
 
 void init_new_rq(struct new_rq *new_rq){
