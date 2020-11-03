@@ -4,6 +4,7 @@ config ARCH
 
 config SCHED_NEW
 	bool "NEW cpu scheduler"
+	default y
     ---help---
     Brand new scheduler 
 
