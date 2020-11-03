@@ -79,6 +79,37 @@ static u64 update_vruntime(struct task_struct *p,struct rq *rq){
    return (u64)((delta * fact) >> shift);
 }
 
+static u64 max_vruntime(u64 time1, u64 time2){
+   s64 delta = (s64)(time2 - time1);
+   if(delta < 0)
+      return time1;
+   return time2;
+}
+
+static u64 min_vruntime(u64 time1, u64 time2){
+   s64 delta = (s64)(time2 - time1);
+   if(delta < 0)
+      return time2;
+   return time1;
+}
+
+//每次update_curr的时候更新最小的vruntime. max{new_rq->vruntime, min{leftmost->vruntime, curr->vruntime}}
+static void update_min_vruntime(struct new_rq *new_rq){
+   struct sched_new_entity *nse;
+   struct task_struct *p = new_rq->curr;
+   struct rb_node *rb_left = rb_first(&new_rq->run_queue);
+
+   u64 m_vruntime = p->nt.vruntime;
+
+   if(rb_left){
+      nse = rb_entry(rb_left, struct sched_new_entity, run_node);
+      m_vruntime = min_vruntime(m_vruntime, nse->vruntime);
+   }
+
+   new_rq->min_vruntime = max_vruntime(m_vruntime, new_rq->min_vruntime);
+   
+}
+
 void update_curr(struct rq *rq){
    struct new_rq *new_rq = &rq->nrq;
    struct task_struct *p = new_rq->curr;
@@ -89,6 +120,7 @@ void update_curr(struct rq *rq){
    nse->vruntime += update_vruntime(p,rq);
    nse->exec_start = rq->clock;
    
+   update_min_vruntime(new_rq);
 }
 
 void init_new_rq(struct new_rq *new_rq){
@@ -138,6 +170,13 @@ enqueue_task_new(struct rq *rq, struct task_struct *p, int flags){
    struct sched_new_entity *nse = &p->nt;
    struct new_rq *nrq = &rq->nrq;
 
+   /* 
+      放在enqueue更新vruntime这样可以保证两点  
+      1.task_fork的时候不必考虑新的进程是不是在父进程的cpu上运行 
+      2.dequeue的时候如果是迁移操作不必考虑两个cpu的vrumtime差距过大
+   */
+   nse->vruntime = nrq->min_vruntime;
+
    if(nrq->curr != p)
       enqueue_entity(nrq, nse);
 
@@ -161,6 +200,9 @@ static void
 dequeue_task_new(struct rq *rq, struct task_struct *p, int flags){
    struct sched_new_entity *nse = &p->nt;
    struct new_rq *nrq = &rq->nrq;
+
+   if(nrq->curr != NULL)
+      update_curr(rq); //看到网上说如果当前dequeue的进程就是正在运行的进程那么很有必要更新？？？
 
    if(p != nrq->curr)
       dequeue_entity(nrq, nse);
@@ -260,7 +302,6 @@ static void set_curr_task_new(struct rq *rq){
 
 static void task_fork_new(struct task_struct *p){
    p->nt.time_slice = NEW_TIMESLICE;
-   p->nt.vruntime = current->nt.vruntime;
 }
 static void switched_from_new(struct rq *this_rq, struct task_struct *task){
    
