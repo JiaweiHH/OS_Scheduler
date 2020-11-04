@@ -52,6 +52,22 @@ task_of(struct sched_new_entity *new_entity){
    // printk("%d----------------------", cpu);
 // }
 
+/* todo Update task and its cfs_rq load average */
+void update_load_avg(struct new_rq *new_rq, struct sched_new_entity *new_entity) {
+}
+
+static inline void
+enqueue_runnable_load_sum(struct new_rq *new_rq, struct sched_new_entity *new_entity)
+{
+	new_rq->runnable_load_sum += sched_prio_to_weight[new_entity->cur_weight_idx];
+}
+
+static inline void
+dequeue_runnable_load_sum(struct new_rq *new_rq, struct sched_new_entity *new_entity)
+{
+	new_rq->runnable_load_sum -= sched_prio_to_weight[new_entity->cur_weight_idx];
+}
+
 static void update_weight_index(struct task_struct *p)
 {
    struct sched_new_entity *nse = &p->nt;
@@ -110,7 +126,11 @@ void update_curr(struct rq *rq){
    struct sched_new_entity *nse = &p->nt;
    nse->time_slice = NEW_TIMESLICE;
 
+   // todo 更新权重时需要更新运行队列的负载值，后期改为pelt算法时需要删除
+   dequeue_runnable_load_sum(new_rq, nse);
    update_weight_index(p);
+   enqueue_runnable_load_sum(new_rq, nse);
+
    nse->vruntime += update_vruntime(p);
 }
 
@@ -171,6 +191,17 @@ enqueue_task_new(struct rq *rq, struct task_struct *p, int flags){
 
    // nse->arrive_time = jiffies;
 
+   /*
+	 * When enqueuing a sched_entity, we must:
+	 *   - Update loads to have both entity and cfs_rq synced with now.
+	 *   - Add its load to cfs_rq->runnable_avg
+	 *   - For group_entity, update its weight to reflect the new share of
+	 *     its group cfs_rq
+	 *   - Add its new weight to cfs_rq->load.weight
+	 */
+	update_load_avg(nrq, nse);
+	enqueue_runnable_load_sum(nrq, nse);
+
    if(nrq->curr != p)
       enqueue_entity(nrq, nse);
 
@@ -196,6 +227,18 @@ static void
 dequeue_task_new(struct rq *rq, struct task_struct *p, int flags){
    struct sched_new_entity *nse = &p->nt;
    struct new_rq *nrq = &rq->nrq;
+
+   /*
+	 * When dequeuing a sched_entity, we must:
+	 *   - Update loads to have both entity and cfs_rq synced with now.
+	 *   - Substract its load from the cfs_rq->runnable_avg.
+	 *   - Substract its previous weight from cfs_rq->load.weight.
+	 *   - For group entity, update its weight to reflect the new share
+	 *     of its group cfs_rq.
+	 */
+   update_load_avg(nrq, nse);
+	dequeue_runnable_load_sum(nrq, nse);
+
    // print_queue(nrq);
    if(p != nrq->curr)
       dequeue_entity(nrq, nse);
