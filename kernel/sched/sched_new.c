@@ -16,7 +16,7 @@
 
 #include <trace/events/sched.h>
 
-#define NEW_TIMESLICE 25
+#define NEW_TIMESLICE (HZ / 50)
 #define INDEX_MAX 40
 #define INDEX_MIN 0
 #define INDEX_DEFAULT 20
@@ -59,24 +59,13 @@ static void update_weight_index(struct task_struct *p){
    nse->cur_weight_idx = index;
 }
 
-//计算vruntime 直接参考奔跑吧Linux内核 p350
+//计算vruntime CFS为了避免浮点数运算造成的性能下降 加入位移运算 这里为了正确性 先用最原始的公式计算
 static u64 update_vruntime(struct task_struct *p,struct rq *rq){
    struct sched_new_entity *nse = &p->nt;
    u64 delta = rq->clock - nse->exec_start;
    if(nse->cur_weight_idx == INDEX_DEFAULT)
       return delta;
-   
-   unsigned long weight_ = scale_load(sched_prio_to_weight[nse->cur_weight_idx]);
-   u32 in_weight_ = sched_prio_to_wmult[nse->cur_weight_idx];
-   int shift = 32;
-   u64 fact = weight_;
-   fact = (u64)(u32)fact * in_weight_;
-   while(fact >> 32) {
-      fact >>= 1;
-      shift--;
-   }
-
-   return (u64)((delta * fact) >> shift);
+   return delta * sched_prio_to_weight[INDEX_DEFAULT] / sched_prio_to_weight[nse->cur_weight_idx];
 }
 
 static u64 max_vruntime(u64 time1, u64 time2){
