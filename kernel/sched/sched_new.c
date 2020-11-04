@@ -380,22 +380,22 @@ void trigger_my_load_balance(struct rq *rq){
       raise_softirq(SCHED_SOFTIRQ);
 }
 
-static int select_task_rq_new(struct task_struct *p, int prev_cpu, int sd_flag, int flags){
+static int select_task_rq_new(struct task_struct *p, int prev_cpu, int sd_flag, int flags) {
+   struct rq *rq;
    unsigned int cpu;
-   unsigned int temp_cpu = prev_cpu, amount_tasks = 65536;
+   unsigned int target_cpu = prev_cpu;
+   u64 target_rq_load = -1;
 
-   // rcu_read_lock();
-   for_each_online_cpu(cpu){
-      struct rq *rq = cpu_rq(cpu);
-      if(rq->nr_running < amount_tasks && cpumask_test_cpu(cpu, &p->cpus_allowed)){
-         temp_cpu = cpu;
-         amount_tasks = rq->nrq.nr_running;
-         // return cpu;
+   for_each_cpu_and(cpu, cpu_online_mask, &p->cpus_allowed) {
+      rq = cpu_rq(cpu);
+      if (target_rq_load < 0 || rq->nrq.runnable_load_sum < target_rq_load) { // 选择负载最低的CPU
+         target_cpu = cpu;
+         target_rq_load = rq->nrq.runnable_load_sum;
       }
+      if (rq->nr_running == 0) break; // 有空闲的CPU直接选择
    }
-   // rcu_read_unlock();
-   return temp_cpu;
-   // return prev_cpu;
+   
+   return target_cpu;
 }
 
 /* Assumes rq->lock is held */
@@ -407,15 +407,16 @@ static void rq_offline_new(struct rq *rq){
 }
 
 struct rq *find_busiest_rq(int this_cpu){
-   int cpu, nr_task = 0;
+   int cpu;
+   u64 target_rq_load = 0;
    struct rq *target_rq = NULL;
    // rcu_read_lock();
    for_each_online_cpu(cpu){
       if(cpu == this_cpu)
          continue;
       struct rq *rq = cpu_rq(cpu);
-      if(rq->nrq.nr_running > 1 && rq->nrq.nr_running > nr_task){
-         nr_task = rq->nrq.nr_running;
+      if(rq->nrq.nr_running > 1 && rq->nrq.runnable_load_sum > target_rq_load) {
+         target_rq_load = rq->nrq.runnable_load_sum;
          target_rq = rq;
       }
    }
