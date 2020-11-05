@@ -21,6 +21,7 @@
 #define INDEX_MIN 0
 #define INDEX_DEFAULT 20
 #define MIN_DIFF 500
+// #define MIN_UPDATE_INTERVAL 5
 
 static int idle_balance(struct rq *this_rq, struct rq_flags *rf);
 
@@ -68,18 +69,15 @@ dequeue_runnable_load_sum(struct new_rq *new_rq, struct sched_new_entity *new_en
 	new_rq->runnable_load_sum -= sched_prio_to_weight[new_entity->cur_weight_idx];
 }
 
-static void update_weight_index(struct task_struct *p)
-{
+static void update_weight_index(struct task_struct *p) {
    struct sched_new_entity *nse = &p->nt;
    //内核线程mm为空
-   if(!p->mm)
-	{
+   if(!p->mm){
 		nse->cur_weight_idx = INDEX_DEFAULT;
       return;
 	}
    //第一次时间片用完 ，当前第一次统计RSS
-	if(nse->lastRSS == 0)
-	{
+	if(nse->lastRSS == 0){
 		nse->lastRSS = get_mm_rss(p->mm);
       nse->cur_weight_idx = INDEX_DEFAULT;
       return;
@@ -100,24 +98,44 @@ static void update_weight_index(struct task_struct *p)
    nse->cur_weight_idx = index;
 }
 
-//计算vruntime 直接参考奔跑吧Linux内核 p350
-static u64 update_vruntime(struct task_struct *p)
-{
+//计算vruntime CFS为了避免浮点数运算造成的性能下降 加入位移运算 这里为了正确性 先用最原始的公式计算
+static u64 update_vruntime(struct task_struct *p,struct rq *rq){
    struct sched_new_entity *nse = &p->nt;
+   u64 delta = rq->clock - nse->exec_start;
    if(nse->cur_weight_idx == INDEX_DEFAULT)
-      return NEW_TIMESLICE;
-   
-   u64 delta = NEW_TIMESLICE;
-   unsigned long weight_ = scale_load(sched_prio_to_weight[nse->cur_weight_idx]);
-   u32 in_weight_ = sched_prio_to_wmult[nse->cur_weight_idx];
-   int shift = 32;
-   u64 fact = weight_;
-   fact = (u64)(u32)fact * in_weight_;
-   while(fact >> 32) {
-      fact >>= 1;
-      shift--;
+      return delta;
+   return delta * sched_prio_to_weight[INDEX_DEFAULT] / sched_prio_to_weight[nse->cur_weight_idx];
+}
+
+static u64 max_vruntime(u64 time1, u64 time2){
+   s64 delta = (s64)(time2 - time1);
+   if(delta < 0)
+      return time1;
+   return time2;
+}
+
+static u64 min_vruntime(u64 time1, u64 time2){
+   s64 delta = (s64)(time2 - time1);
+   if(delta < 0)
+      return time2;
+   return time1;
+}
+
+//每次update_curr的时候更新最小的vruntime. max{new_rq->vruntime, min{leftmost->vruntime, curr->vruntime}}
+static void update_min_vruntime(struct new_rq *new_rq){
+   struct sched_new_entity *nse;
+   struct task_struct *p = new_rq->curr;
+   struct rb_node *rb_left = rb_first(&new_rq->run_queue);
+
+   u64 m_vruntime = p->nt.vruntime;
+
+   if(rb_left){
+      nse = rb_entry(rb_left, struct sched_new_entity, run_node);
+      m_vruntime = min_vruntime(m_vruntime, nse->vruntime);
    }
-   return (u64)((delta * fact) >> shift);
+
+   new_rq->min_vruntime = max_vruntime(m_vruntime, new_rq->min_vruntime);
+   
 }
 
 void update_curr(struct rq *rq){
@@ -131,11 +149,13 @@ void update_curr(struct rq *rq){
    update_weight_index(p);
    enqueue_runnable_load_sum(new_rq, nse);
 
-   nse->vruntime += update_vruntime(p);
+   nse->vruntime += update_vruntime(p,rq);
+   nse->exec_start = rq->clock;
+   
+   update_min_vruntime(new_rq);
 }
 
-void init_new_rq(struct new_rq *new_rq)
-{
+void init_new_rq(struct new_rq *new_rq){
 	new_rq->run_queue = RB_ROOT;
 	new_rq->curr = NULL;
    new_rq->nr_running = 0;
@@ -144,14 +164,11 @@ void init_new_rq(struct new_rq *new_rq)
 }
 
 int new_rq_empty(struct new_rq *nrq){
-   // printk("next: %p, run_queue: %p", nrq->run_queue.next, &nrq->run_queue);
    return nrq->nr_running == 0;
 }
 
 bool compared_with_vruntime(struct sched_new_entity *new, struct sched_new_entity *temp){
-   if(temp->vruntime > new->vruntime)
-      return true;
-   return false;
+   return (s64)(temp->vruntime - new->vruntime) > 0;
 }
 
 
@@ -160,9 +177,6 @@ enqueue_entity(struct new_rq *new_rq, struct sched_new_entity *new_entity){
    struct rb_node **link = &new_rq->run_queue.rb_node;
 	struct rb_node *parent = NULL;
 	struct sched_new_entity *entry;
-	// bool leftmost = true;
-
-   // new_entity->arrive_time = jiffies;
 
    while (*link) {
 		parent = *link;
@@ -189,7 +203,12 @@ enqueue_task_new(struct rq *rq, struct task_struct *p, int flags){
    struct sched_new_entity *nse = &p->nt;
    struct new_rq *nrq = &rq->nrq;
 
-   // nse->arrive_time = jiffies;
+   /* 
+      放在enqueue更新vruntime这样可以保证两点  
+      1.task_fork的时候不必考虑新的进程是不是在父进程的cpu上运行 
+      2.dequeue的时候如果是迁移操作不必考虑两个cpu的vrumtime差距过大
+   */
+   nse->vruntime = nrq->min_vruntime;
 
    /*
 	 * When enqueuing a sched_entity, we must:
@@ -214,12 +233,10 @@ enqueue_task_new(struct rq *rq, struct task_struct *p, int flags){
    nrq->nr_running++;
    add_nr_running(rq, 1);
    // printk("cpu: %d, %d enqueue, new_rq have %d task\n", rq->cpu, p->pid, nrq->nr_running);
-   // print_queue(nrq, rq->cpu);
 }
 
 static void 
 dequeue_entity(struct new_rq *new_rq, struct sched_new_entity *new_entity){
-   // printk("准备dequeue %d, on_rq: %d\n", p->pid, new_entity->on_rq);
    rb_erase(&new_entity->run_node, &new_rq->run_queue);
 }
 
@@ -227,6 +244,10 @@ static void
 dequeue_task_new(struct rq *rq, struct task_struct *p, int flags){
    struct sched_new_entity *nse = &p->nt;
    struct new_rq *nrq = &rq->nrq;
+
+   // print_queue(nrq);
+   if(nrq->curr != NULL)
+      update_curr(rq); //看到网上说如果当前dequeue的进程就是正在运行的进程那么很有必要更新？？？
 
    /*
 	 * When dequeuing a sched_entity, we must:
@@ -239,7 +260,6 @@ dequeue_task_new(struct rq *rq, struct task_struct *p, int flags){
    update_load_avg(nrq, nse);
 	dequeue_runnable_load_sum(nrq, nse);
 
-   // print_queue(nrq);
    if(p != nrq->curr)
       dequeue_entity(nrq, nse);
    
@@ -248,7 +268,6 @@ dequeue_task_new(struct rq *rq, struct task_struct *p, int flags){
    nrq->nr_running--;
    sub_nr_running(rq, 1);
    // printk("cpu: %d, %d dequeue, new_rq have %d task\n", rq->cpu, p->pid, nrq->nr_running); 
-   // print_queue(nrq, rq->cpu);
 }
 
 static void yield_task_new(struct rq *rq){
@@ -268,14 +287,10 @@ struct sched_new_entity *pick_next_entity(struct new_rq *new_rq){
 }
 
 void set_next_entity(struct new_rq *new_rq, struct sched_new_entity *new_entity, int cpu){
-   // struct task_struct *p = task_of(new_entity);
-   // printk("set_next_entity. cpu: %d, set %d", cpu, p->pid);
    if(new_entity->on_rq){
       dequeue_entity(new_rq, new_entity);
-      // printk("set_next_entity. cpu: %d, dequeue %d", cpu, p->pid);
    }
    new_rq->curr = task_of(new_entity);
-   // print_queue(new_rq, cpu * 10 + 5);
 }
 
 static struct task_struct *
@@ -291,7 +306,7 @@ again:
       nse = pick_next_entity(new_rq);
       set_next_entity(new_rq, nse, rq->cpu);
       p = task_of(nse);
-
+      p->nt.exec_start = rq->clock;
       return p;
    }
 
@@ -331,8 +346,6 @@ static void put_prev_task_new(struct rq *rq, struct task_struct *prev){
       update_curr(rq);
       enqueue_entity(new_rq, &prev->nt);
    }
-      
-   // print_queue(new_rq, rq->cpu * 10 + 6);
    
    new_rq->curr = NULL;
 }
@@ -345,7 +358,6 @@ static void set_curr_task_new(struct rq *rq){
 
 static void task_fork_new(struct task_struct *p){
    p->nt.time_slice = NEW_TIMESLICE;
-   p->nt.vruntime = current->nt.vruntime;
 }
 static void switched_from_new(struct rq *this_rq, struct task_struct *task){
    
@@ -370,8 +382,6 @@ bool is_migrate_task(struct task_struct *task, struct rq *this_rq, struct rq *ta
       return false;
    if(task_running(target_rq, task)) //task_running开启了SMP时判断on_cpu字段
       return false;
-   // if(target_rq->curr == task)
-   //    return false;
    return true;
 }
 
@@ -410,7 +420,7 @@ struct rq *find_busiest_rq(int this_cpu){
    int cpu;
    u64 target_rq_load = 0;
    struct rq *target_rq = NULL;
-   // rcu_read_lock();
+
    for_each_online_cpu(cpu){
       if(cpu == this_cpu)
          continue;
@@ -420,7 +430,7 @@ struct rq *find_busiest_rq(int this_cpu){
          target_rq = rq;
       }
    }
-   // rcu_read_unlock();
+
 
    return target_rq;
 }
@@ -482,9 +492,6 @@ static void task_dead_new(struct task_struct *p){}
    因为目标是找到最长的rq，而要出现上述情况两个rq必须一样长，但是其中一个为0，因此不可能出现
 */
 static int idle_balance(struct rq *this_rq, struct rq_flags *rf){
-   // if(this_rq->avg_idle < sysctl_sched_migration_cost) //当前cpu处于idle状态的时间
-   //    return 0;
-
    int this_cpu = this_rq->cpu;
    int pulled_task = 0;
 
@@ -524,8 +531,6 @@ static int idle_balance(struct rq *this_rq, struct rq_flags *rf){
          // del_task->on_rq = TASK_ON_RQ_QUEUED; //CFS
          pulled_task++;
          // check_preempt_curr(this_rq, del_task, 0); //CFS
-         // printk("process migrate %d, from %d to %d. cpu 0123: %d %d %d %d\n", migrate_task->pid, target_cpu, this_cpu, 
-                                                                                       // cpu_rq(0)->nrq.nr_running, cpu_rq(1)->nrq.nr_running, cpu_rq(2)->nrq.nr_running, cpu_rq(3)->nrq.nr_running);
    }
 
    raw_spin_unlock(&target_rq->lock);
