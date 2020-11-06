@@ -25,9 +25,25 @@
 
 static int idle_balance(struct rq *this_rq, struct rq_flags *rf);
 
+struct mlb_env {
+	struct rq *src_rq;
+	int src_cpu;
+
+	struct rq *dst_rq;
+	int dst_cpu;
+
+	long imbalance;
+	struct rb_root tasks;//组织即将迁移的进程
+};
+
 static struct task_struct *
 task_of(struct sched_new_entity *new_entity){
    return container_of(new_entity, struct task_struct, nt);
+}
+
+static int task_load(struct task_struct *p)
+{
+	return sched_prio_to_weight[p->nt.cur_weight_idx];
 }
 
 // static void 
@@ -171,6 +187,25 @@ bool compared_with_vruntime(struct sched_new_entity *new, struct sched_new_entit
    return (s64)(temp->vruntime - new->vruntime) > 0;
 }
 
+static void insert_rb_node(struct rb_root *root, struct sched_new_entity *se)
+{
+	struct rb_node **link = &root->rb_node, *parent = NULL;
+	struct sched_new_entity *entity;
+
+	while (*link) {
+		parent = *link;
+		entity = rb_entry(parent, struct sched_new_entity, run_node);
+
+		if (compared_with_vruntime(se, entity)) {
+			link = &parent->rb_left;
+		} else {
+			link = &parent->rb_right;
+		}
+	}
+
+	rb_link_node(&se->run_node, parent, link);
+	rb_insert_color(&se->run_node, root);
+}
 
 static void 
 enqueue_entity(struct new_rq *new_rq, struct sched_new_entity *new_entity){
@@ -435,49 +470,108 @@ struct rq *find_busiest_rq(int this_cpu){
    return target_rq;
 }
 
+static void calculate_imbalance(struct mlb_env *env)
+{
+	env->imbalance = (env->src_rq->nrq.runnable_load_sum -
+			  env->dst_rq->nrq.runnable_load_sum) /
+			 2;
+}
+
+static void attach_tasks(struct mlb_env *env)
+{
+	struct rb_root *root = &env->tasks;
+	struct rb_node *node = root->rb_node;
+	struct task_struct *p;
+	struct sched_new_entity *se;
+
+	while (node) {
+		se = rb_entry(node, struct sched_new_entity, run_node);
+		p = task_of(se);
+		rb_erase(&se->run_node, root);
+
+		// p->on_rq = TASK_ON_RQ_QUEUED;
+		activate_task(env->dst_rq, p, 0);
+
+		node = rb_next(node);
+	}
+}
+
+static int detach_tasks(struct mlb_env *env)
+{
+	struct rb_root *root = &env->src_rq->nrq.run_queue;
+	struct rb_node *node = root->rb_node;
+	struct sched_new_entity *se;
+	struct task_struct *p;
+	unsigned long load;
+	int detached = 0;
+
+	if (env->imbalance <= 0) {
+		return 0;
+	}
+
+	while (node) {
+		se = rb_entry(node, struct sched_new_entity, run_node);
+		p = task_of(se);
+		if (!is_migrate_task(p, env->dst_rq, env->src_rq)) {
+			node = rb_next(node);
+			continue;
+		}
+
+		load = task_load(p);
+		deactivate_task(env->src_rq, p, 0);
+		// p->on_rq = TASK_ON_RQ_MIGRATING;
+		set_task_cpu(p, env->dst_cpu);
+
+		insert_rb_node(&env->tasks, se);
+		detached++;
+
+		env->imbalance -= load;
+		if (env->imbalance <= 0)
+			break;
+
+		node = rb_next(node);
+	}
+
+	return detached;
+}
+
 static __latent_entropy void run_my_load_balance(struct softirq_action *h)
 {
 	struct rq *this_rq = this_rq();
    unsigned long next_balance = jiffies + 60*HZ;  //触发周期
    struct rq_flags rf;
+   int ld_num=0;
+
+	struct mlb_env env = {
+		.dst_cpu = smp_processor_id(),
+		.dst_rq = this_rq,
+		.tasks = RB_ROOT,
+	};
+
    struct rq *busiest_rq = find_busiest_rq(this_rq->cpu);
 
    if(busiest_rq == NULL){
       return;
    }
 
-   // //需要在遍历链表获取migrate_task之前加锁，不然的话会导致当运行到删除进程的时候另一个CPU将migrate_task设置为正在运行的进程了
-   raw_spin_lock_irq(&busiest_rq->lock);
-   struct rb_root *root = &busiest_rq->nrq.run_queue;
-   struct rb_node *node = root->rb_node;
-   struct sched_new_entity *se;
-   struct task_struct *migrate_task = NULL;
+   env.src_cpu = busiest_rq->cpu;
+	env.src_rq = busiest_rq;
+	calculate_imbalance(&env);
 
-   while(node){
-      se = rb_entry(node, struct sched_new_entity, run_node);
-      struct task_struct *p = task_of(se);
-      if(is_migrate_task(p, this_rq, busiest_rq)){
-         migrate_task = p;
-         break;
-      }
-      node = rb_next(node);
-   }
-   if(migrate_task == NULL){
-      raw_spin_unlock_irq(&busiest_rq->lock);
-      return;
-   }
-      
-   // printk("%d softirq load_balance触发\n", this_rq->cpu);
-   
-   deactivate_task(busiest_rq, migrate_task, 0);
-   set_task_cpu(migrate_task, this_rq->cpu);
+   // //需要在遍历链表获取migrate_task之前加锁，不然的话会导致当运行到删除进程的时候另一个CPU将migrate_task设置为正在运行的进程了
+   raw_spin_lock_irq(&busiest_rq->lock);   
+   ld_num=detach_tasks(&env);
    raw_spin_unlock(&busiest_rq->lock);
 
-   raw_spin_lock(&this_rq->lock);
-   activate_task(this_rq, migrate_task, 0);
+
+   if(ld_num>0){
+      // printk("load_balance:ld_num=%d\n",ld_num);
+	   raw_spin_lock(&env.dst_rq->lock);
+      attach_tasks(&env);
+	   raw_spin_unlock_irq(&env.dst_rq->lock);
+   }
    this_rq->next_balance = next_balance;
    
-   raw_spin_unlock_irq(&this_rq->lock);
 }
 
 static void migrate_task_rq_new(struct task_struct *p){
@@ -498,39 +592,27 @@ static int idle_balance(struct rq *this_rq, struct rq_flags *rf){
    if (!cpu_active(this_cpu))
 		return 0;
 
+   struct mlb_env env = {
+		.dst_cpu = smp_processor_id(),
+		.dst_rq = this_rq,
+		.tasks = RB_ROOT,
+	};
+
    struct rq *target_rq = find_busiest_rq(this_cpu);
    if(target_rq != NULL)
       raw_spin_lock(&target_rq->lock); //不需要对this_rq加锁，因为在pick_next_task被调用之前就已经获取了this_rq的锁
    else
       return 0;
-      
-   // struct list_head *queue = &target_nrq->run_queue;
-   struct rb_root *root = &target_rq->nrq.run_queue;
-   struct rb_node *node = root->rb_node;
-   int target_cpu = target_rq->cpu;
 
-   struct sched_new_entity *temp_se;
-   struct task_struct *migrate_task = NULL;
+   env.src_cpu = target_rq->cpu;
+	env.src_rq = target_rq;
+	calculate_imbalance(&env);
 
-   while(node){
-      temp_se = rb_entry(node, struct sched_new_entity, run_node);
-      struct task_struct *p = container_of(temp_se, struct task_struct, nt);
-      
-      if(is_migrate_task(p, this_rq, target_rq)){
-         migrate_task = p;
-         break;
-      }
+   pulled_task=detach_tasks(&env);
 
-      node = rb_next(node);
-   }
-   if(migrate_task){
-         deactivate_task(target_rq, migrate_task, 0);
-         // del_task->on_rq = TASK_ON_RQ_MIGRATING; //CFS中迁移进程的时候设置了这个状态位, 测试发现可以不加
-         set_task_cpu(migrate_task, this_cpu);
-         activate_task(this_rq, migrate_task, 0);
-         // del_task->on_rq = TASK_ON_RQ_QUEUED; //CFS
-         pulled_task++;
-         // check_preempt_curr(this_rq, del_task, 0); //CFS
+   if(pulled_task>0){
+      // printk("idle balance:pull_task=%d\n",pulled_task);
+      attach_tasks(&env);
    }
 
    raw_spin_unlock(&target_rq->lock);
