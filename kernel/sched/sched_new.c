@@ -48,14 +48,15 @@ static void update_weight_index(struct task_struct *p){
 	int cur_rss = get_mm_rss(p->mm);
 	
 	if(cur_rss - nse->lastRSS > MIN_DIFF) {
+      nse->lastRSS = cur_rss;
 		index--;
 	} else if(nse->lastRSS - cur_rss > MIN_DIFF) {
+      nse->lastRSS = cur_rss;
 		index++;
 	}
 	//调整至合法区间
    index = max(INDEX_MIN, index);
 	index = min(INDEX_MAX - 1, index);
-	nse->lastRSS = cur_rss;
    nse->cur_weight_idx = index;
 }
 
