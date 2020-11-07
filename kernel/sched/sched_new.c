@@ -61,7 +61,7 @@ static void update_weight_index(struct task_struct *p){
 }
 
 //计算vruntime CFS为了避免浮点数运算造成的性能下降 加入位移运算 这里为了正确性 先用最原始的公式计算
-static u64 update_vruntime(struct task_struct *p,struct rq *rq){
+static u64 translate_vruntime(struct task_struct *p,struct rq *rq){
    struct sched_new_entity *nse = &p->nt;
    u64 delta = rq->clock - nse->exec_start;
    if(nse->cur_weight_idx == INDEX_DEFAULT)
@@ -107,7 +107,7 @@ void update_curr(struct rq *rq){
    nse->time_slice = NEW_TIMESLICE;
 
    update_weight_index(p);
-   nse->vruntime += update_vruntime(p,rq);
+   nse->vruntime += translate_vruntime(p, rq);
    nse->exec_start = rq->clock;
    
    update_min_vruntime(new_rq);
@@ -124,8 +124,8 @@ int new_rq_empty(struct new_rq *nrq){
    return nrq->nr_running == 0;
 }
 
-bool compared_with_vruntime(struct sched_new_entity *new, struct sched_new_entity *temp){
-   return (s64)(temp->vruntime - new->vruntime) > 0;
+bool compared_with_vruntime(struct sched_new_entity *sne_a, struct sched_new_entity *sne_b){
+   return (s64)(sne_b->vruntime - sne_a->vruntime) > 0; //溢出问题的处理
 }
 
 
