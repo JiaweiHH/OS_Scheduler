@@ -502,6 +502,7 @@ struct sched_rt_entity {
 
 struct sched_new_entity{
 	struct rb_node run_node;
+	struct list_head list_node;
 	unsigned int time_slice;
 	unsigned short on_rq;
 	unsigned long arrive_time;

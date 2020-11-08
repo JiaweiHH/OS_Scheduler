@@ -33,7 +33,7 @@ struct mlb_env {
 	int dst_cpu;
 
 	long imbalance;
-	struct rb_root tasks;//组织即将迁移的进程
+	struct list_head tasks;//组织即将迁移的进程
 };
 
 static struct task_struct *
@@ -479,20 +479,18 @@ static void calculate_imbalance(struct mlb_env *env)
 
 static void attach_tasks(struct mlb_env *env)
 {
-	struct rb_root *root = &env->tasks;
-	struct rb_node *node = root->rb_node;
+	// struct rb_root *root = &env->tasks;
+	// struct rb_node *node = root->rb_node;
 	struct task_struct *p;
 	struct sched_new_entity *se;
 
-	while (node) {
-		se = rb_entry(node, struct sched_new_entity, run_node);
+	while (!list_empty(&env->tasks)) {
+      se = list_entry(env->tasks.next,struct sched_new_entity,list_node);
 		p = task_of(se);
-		rb_erase(&se->run_node, root);
+      list_del(&se->list_node);
 
 		// p->on_rq = TASK_ON_RQ_QUEUED;
 		activate_task(env->dst_rq, p, 0);
-
-		node = rb_next(node);
 	}
 }
 
@@ -522,7 +520,7 @@ static int detach_tasks(struct mlb_env *env)
 		// p->on_rq = TASK_ON_RQ_MIGRATING;
 		set_task_cpu(p, env->dst_cpu);
 
-		insert_rb_node(&env->tasks, se);
+      list_add_tail(&se->list_node,&env->tasks);
 		detached++;
 
 		env->imbalance -= load;
@@ -539,14 +537,14 @@ static __latent_entropy void run_my_load_balance(struct softirq_action *h)
 {
 	struct rq *this_rq = this_rq();
    unsigned long next_balance = jiffies + 60*HZ;  //触发周期
-   struct rq_flags rf;
-   int ld_num=0;
+   int ld_num = 0;
 
 	struct mlb_env env = {
 		.dst_cpu = smp_processor_id(),
 		.dst_rq = this_rq,
-		.tasks = RB_ROOT,
 	};
+
+   INIT_LIST_HEAD(&env.tasks);
 
    struct rq *busiest_rq = find_busiest_rq(this_rq->cpu);
 
@@ -560,11 +558,11 @@ static __latent_entropy void run_my_load_balance(struct softirq_action *h)
 
    // //需要在遍历链表获取migrate_task之前加锁，不然的话会导致当运行到删除进程的时候另一个CPU将migrate_task设置为正在运行的进程了
    raw_spin_lock_irq(&busiest_rq->lock);   
-   ld_num=detach_tasks(&env);
+   ld_num = detach_tasks(&env);
    raw_spin_unlock(&busiest_rq->lock);
 
 
-   if(ld_num>0){
+   if(ld_num > 0){
       // printk("load_balance:ld_num=%d\n",ld_num);
 	   raw_spin_lock(&env.dst_rq->lock);
       attach_tasks(&env);
@@ -595,8 +593,9 @@ static int idle_balance(struct rq *this_rq, struct rq_flags *rf){
    struct mlb_env env = {
 		.dst_cpu = smp_processor_id(),
 		.dst_rq = this_rq,
-		.tasks = RB_ROOT,
 	};
+
+   INIT_LIST_HEAD(&env.tasks);
 
    struct rq *target_rq = find_busiest_rq(this_cpu);
    if(target_rq != NULL)
@@ -608,9 +607,9 @@ static int idle_balance(struct rq *this_rq, struct rq_flags *rf){
 	env.src_rq = target_rq;
 	calculate_imbalance(&env);
 
-   pulled_task=detach_tasks(&env);
+   pulled_task = detach_tasks(&env);
 
-   if(pulled_task>0){
+   if(pulled_task > 0){
       // printk("idle balance:pull_task=%d\n",pulled_task);
       attach_tasks(&env);
    }
