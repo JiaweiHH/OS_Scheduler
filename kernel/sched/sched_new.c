@@ -188,26 +188,6 @@ bool compared_with_vruntime(struct sched_new_entity *sne_a, struct sched_new_ent
    return (s64)(sne_b->vruntime - sne_a->vruntime) > 0; //溢出问题的处理
 }
 
-static void insert_rb_node(struct rb_root *root, struct sched_new_entity *se)
-{
-	struct rb_node **link = &root->rb_node, *parent = NULL;
-	struct sched_new_entity *entity;
-
-	while (*link) {
-		parent = *link;
-		entity = rb_entry(parent, struct sched_new_entity, run_node);
-
-		if (compared_with_vruntime(se, entity)) {
-			link = &parent->rb_left;
-		} else {
-			link = &parent->rb_right;
-		}
-	}
-
-	rb_link_node(&se->run_node, parent, link);
-	rb_insert_color(&se->run_node, root);
-}
-
 static void 
 enqueue_entity(struct new_rq *new_rq, struct sched_new_entity *new_entity){
    struct rb_node **link = &new_rq->run_queue.rb_node;
@@ -480,17 +460,14 @@ static void calculate_imbalance(struct mlb_env *env)
 
 static void attach_tasks(struct mlb_env *env)
 {
-	// struct rb_root *root = &env->tasks;
-	// struct rb_node *node = root->rb_node;
 	struct task_struct *p;
 	struct sched_new_entity *se;
 
 	while (!list_empty(&env->tasks)) {
-      se = list_entry(env->tasks.next,struct sched_new_entity,list_node);
+      se = list_entry(env->tasks.next, struct sched_new_entity, migrate_node);
 		p = task_of(se);
-      list_del(&se->list_node);
+      list_del(&se->migrate_node);
 
-		// p->on_rq = TASK_ON_RQ_QUEUED;
 		activate_task(env->dst_rq, p, 0);
 	}
 }
@@ -518,10 +495,9 @@ static int detach_tasks(struct mlb_env *env)
 
 		load = task_load(p);
 		deactivate_task(env->src_rq, p, 0);
-		// p->on_rq = TASK_ON_RQ_MIGRATING;
 		set_task_cpu(p, env->dst_cpu);
 
-      list_add_tail(&se->list_node,&env->tasks);
+      list_add_tail(&se->migrate_node, &env->tasks);
 		detached++;
 
 		env->imbalance -= load;
@@ -557,7 +533,7 @@ static __latent_entropy void run_my_load_balance(struct softirq_action *h)
 	env.src_rq = busiest_rq;
 	calculate_imbalance(&env);
 
-   // //需要在遍历链表获取migrate_task之前加锁，不然的话会导致当运行到删除进程的时候另一个CPU将migrate_task设置为正在运行的进程了
+   //需要在遍历链表获取migrate_task之前加锁，不然的话会导致当运行到删除进程的时候另一个CPU将migrate_task设置为正在运行的进程了
    raw_spin_lock_irq(&busiest_rq->lock);   
    ld_num = detach_tasks(&env);
    raw_spin_unlock(&busiest_rq->lock);
