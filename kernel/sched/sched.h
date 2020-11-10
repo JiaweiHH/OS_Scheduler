@@ -586,6 +586,8 @@ struct new_rq{
 	struct task_struct *curr;
 	unsigned int nr_running;
 	unsigned long next_balance; //下一次tick中断触发时间
+	u64 min_vruntime;
+	u64 runnable_load_sum; // 运行时任务负载之和，用于负载均衡
 };
 
 /* Real-Time classes' related field in a runqueue: */

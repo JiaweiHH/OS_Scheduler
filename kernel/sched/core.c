@@ -2171,9 +2171,11 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 	p->se.vruntime			= 0;
 	INIT_LIST_HEAD(&p->se.group_node);
 
-	// INIT_LIST_HEAD(&p->nt.run_list);
 	p->nt.time_slice = NEW_TIMESLICE;
 	p->nt.on_rq = 0;
+	p->nt.lastRSS = 0;
+	p->nt.vruntime = 0;
+	p->nt.cur_weight_idx = 0;
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
 	p->se.cfs_rq			= NULL;
