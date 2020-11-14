@@ -25,6 +25,11 @@
 
 static int idle_balance(struct rq *this_rq, struct rq_flags *rf);
 
+//从new_rq找到rq
+static inline struct rq *rq_of(struct new_rq *new_rq){
+	return container_of(new_rq, struct rq, nrq);
+}
+
 struct mlb_env {
 	struct rq *src_rq;
 	int src_cpu;
@@ -336,21 +341,23 @@ again:
    return NULL;
 }
 
+//判断当前是否满足抢占条件，后续更改新进程加入的vruntime机制之后，可以在enqueue之后也添加判断
+static void check_preempt(struct new_rq *new_rq){
+   struct task_struct *curr = new_rq->curr;
+   if(curr->nt.vruntime > new_rq->min_vruntime)
+      resched_curr(rq_of(new_rq));
+}
+
 static void task_tick_new(struct rq *rq, struct task_struct *p, int queued){
    struct sched_new_entity *nse;
    nse = &p->nt;
-   if(--nse->time_slice){
-      return;
-   }
-   //time_slice == 0
+
    update_curr(rq);
    
-
    struct new_rq *nrq = &rq->nrq;
 
    if(nrq->nr_running > 1){
-      // printk("cpu: %d, %d need sched", rq->cpu, p->pid);
-      resched_curr(rq);
+      check_preempt(nrq);
    }
 } 
 
@@ -388,7 +395,6 @@ static void prio_changed_new(struct rq *this_rq, struct task_struct *task,
 static unsigned int get_rr_interval_new(struct rq *rq, struct task_struct *task){
    return NEW_TIMESLICE;
 }
-
 
 
 #ifdef CONFIG_SMP
