@@ -170,7 +170,8 @@ void update_curr(struct rq *rq){
    nse->exec_start = rq->clock;
    
    update_min_vruntime(new_rq);
-   printk("pid: %d, RSS: %lu\n", p->pid, nse->lastRSS);
+   if(p->static_prio == 121)
+      printk("pid: %d, RSS: %lu\n", p->pid, nse->lastRSS);
 }
 
 void init_new_rq(struct new_rq *new_rq){

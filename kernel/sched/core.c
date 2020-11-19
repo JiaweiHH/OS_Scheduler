@@ -4117,7 +4117,7 @@ static void __setscheduler_params(struct task_struct *p,
 	if (dl_policy(policy))
 		__setparam_dl(p, attr);
 	else if (new_policy(policy))
-		p->static_prio = NICE_TO_PRIO(attr->sched_nice);
+		p->static_prio = NICE_TO_PRIO(attr->sched_nice); //对于普通进程设置静态优先级，静态优先级可以转为normal，normal转为动态优先级
 
 	/*
 	 * __sched_setscheduler() ensures attr->sched_priority == 0 when
